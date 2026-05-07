@@ -33,13 +33,16 @@ app.use(cors({
   credentials: true,
 }));
 
+const apiRouter = express.Router();
+app.use("/api", apiRouter);
+
 // ─── Auth routes ──────────────────────────────────────────────────
 
 /**
  * GET /auth/discord
  * Redirects the user to Discord's OAuth2 authorization page.
  */
-app.get("/auth/discord", (_req, res) => {
+apiRouter.get("/auth/discord", (_req, res) => {
   if (!DISCORD_CLIENT_ID || !DISCORD_REDIRECT_URI) {
     return res.status(500).send("Discord OAuth configuration missing.");
   }
@@ -58,7 +61,7 @@ app.get("/auth/discord", (_req, res) => {
  * Handles the redirect from Discord, exchanges the code for a token,
  * fetches user info, and creates a local session.
  */
-app.get("/auth/discord/callback", async (req, res) => {
+apiRouter.get("/auth/discord/callback", async (req, res) => {
   const code = req.query.code as string;
   if (!code) {
     return res.redirect(`${process.env.FRONTEND_URL}/?error=discord_denied`);
@@ -89,7 +92,7 @@ app.get("/auth/discord/callback", async (req, res) => {
  * GET /auth/me
  * Returns information about the currently logged-in user.
  */
-app.get("/auth/me", checkAuthenticatedUser, (req: AuthenticatedRequest, res) => {
+apiRouter.get("/auth/me", checkAuthenticatedUser, (req: AuthenticatedRequest, res) => {
   const u = req.user!;
   res.json({
     id:         u.id,
@@ -106,7 +109,7 @@ app.get("/auth/me", checkAuthenticatedUser, (req: AuthenticatedRequest, res) => 
  * POST /auth/logout
  * Destroys the current session.
  */
-app.post("/auth/logout", async (req: AuthenticatedRequest, res) => {
+apiRouter.post("/auth/logout", async (req: AuthenticatedRequest, res) => {
   const token = req.cookies["session"];
   if (token) await logout(token);
   res.clearCookie("session");
@@ -119,7 +122,7 @@ app.post("/auth/logout", async (req: AuthenticatedRequest, res) => {
  * GET /new
  * Returns the list of all professors (people).
  */
-app.get("/new", checkAuthenticatedUser, (_req, res) => {
+apiRouter.get("/new", checkAuthenticatedUser, (_req, res) => {
   // Only send small image info, not full local paths
   const publicPeople = people.map((p) => ({
     name:  p.name,
@@ -132,7 +135,7 @@ app.get("/new", checkAuthenticatedUser, (_req, res) => {
  * POST /send
  * Receives the professor placement data from a user.
  */
-app.post("/send", checkAuthenticatedUser, async (req: AuthenticatedRequest, res) => {
+apiRouter.post("/send", checkAuthenticatedUser, async (req: AuthenticatedRequest, res) => {
   const newResults = req.body.results;
 
   if (!Array.isArray(newResults)) {
@@ -173,7 +176,7 @@ app.post("/send", checkAuthenticatedUser, async (req: AuthenticatedRequest, res)
  * GET /stats
  * Returns the average values for each person.
  */
-app.get("/stats", async (_req, res) => {
+apiRouter.get("/stats", async (_req, res) => {
   const results = await getAllResults();
   const stats: Record<string, { totalQ: number; totalC: number; count: number; name: string }> = {};
 
@@ -204,7 +207,7 @@ app.get("/stats", async (_req, res) => {
  * GET /image/:id
  * Serves the professor's photo from the local filesystem.
  */
-app.get("/image/:id", (req, res) => {
+apiRouter.get("/image/:id", (req, res) => {
   const person = people.find((p) => p.image.id === req.params.id);
 
   if (!person) return res.status(404).send("Image not found");
@@ -217,14 +220,21 @@ app.get("/image/:id", (req, res) => {
   }
 });
 
+// ─── Serve static frontend (must be after all API routes) ─────────
+const frontendPath = path.join(__dirname, "frontend-out");
+app.use(express.static(frontendPath, {
+  index: "index.html",
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith(".html")) {
+      res.setHeader("Cache-Control", "no-cache");
+    }
+  },
+}));
+
 // ─── Final startup ────────────────────────────────────────────────
-initDb().then(() => {
-  app.listen(PORT, () => {
-    console.log(`🚀  API running on http://localhost:${PORT}`);
-    console.log(`   Discord redirect URI: ${process.env.DISCORD_REDIRECT_URI || "(not set)"}`);
-    console.log(`   SQLite database initialized at api/database.sqlite`);
-  });
-}).catch(err => {
-  console.error("Failed to initialize database:", err);
-  process.exit(1);
+initDb();
+app.listen(PORT, () => {
+  console.log(`🚀  API running on http://localhost:${PORT}`);
+  console.log(`   Discord redirect URI: ${process.env.DISCORD_REDIRECT_URI || "(not set)"}`);
+  console.log(`   SQLite database initialized`);
 });

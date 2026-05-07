@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tierlist-config
+  namespace: tierlist
+data:
+  NODE_ENV: "production"
+  PORT: "3000"
+  FRONTEND_URL: "https://tierlist.cedricsazos.com"
+  DISCORD_REDIRECT_URI: "https://tierlist.cedricsazos.com/api/auth/discord/callback"
+  NEXT_PUBLIC_API_URL: "https://tierlist.cedricsazos.com/api"
+  DB_PATH: "/app/data/database.sqlite"

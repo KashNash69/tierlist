@@ -1,8 +1,7 @@
 import { User, Session, Personne, ResultEntry } from "./models";
 import path from "path";
 import fs from "fs";
-import sqlite3 from "sqlite3";
-import { open, Database } from "sqlite";
+import Database from "better-sqlite3";
 
 // ─── Professors List (Static) ────────────────────────────────────
 const imagesBasePath = path.join(__dirname, "..", "Prof_subtitles");
@@ -46,20 +45,19 @@ export const people: Personne[] = [
 ];
 
 // ─── DB Initialization ───────────────────────────────────────────
-let db: Database<sqlite3.Database, sqlite3.Statement>;
+let db: Database.Database;
 
 export const ADMIN_DISCORD_IDS = new Set<string>(
   (process.env.ADMIN_DISCORD_IDS ?? "").split(",").map(s => s.trim()).filter(Boolean)
 );
 
-export async function initDb() {
-  db = await open({
-    filename: path.join(__dirname, "database.sqlite"),
-    driver: sqlite3.Database,
-  });
+export function initDb() {
+  const dbPath = process.env.DB_PATH || path.join(__dirname, "database.sqlite");
+  db = new Database(dbPath);
+  db.pragma("journal_mode = WAL");
 
   // Create Users table
-  await db.exec(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       discord_id TEXT UNIQUE NOT NULL,
@@ -69,24 +67,24 @@ export async function initDb() {
   `);
 
   // Create Sessions table
-  await db.exec(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       token      TEXT PRIMARY KEY,
       user_id    INTEGER NOT NULL,
-      expires_at DATETIME NOT NULL,
+      expires_at TEXT NOT NULL,
       FOREIGN KEY(user_id) REFERENCES users(id)
     )
   `);
 
   // Create Results table (stores the whole entry array as JSON)
-  await db.exec(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS results (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id      INTEGER NOT NULL,
       discord_id   TEXT NOT NULL,
       username     TEXT NOT NULL,
       entries_json TEXT NOT NULL,
-      submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(user_id) REFERENCES users(id)
     )
   `);
@@ -97,19 +95,21 @@ export async function initDb() {
       const raw = fs.readFileSync(jsonPath, "utf-8");
       const data = JSON.parse(raw);
       
-      for (const res of (data.results || [])) {
-        // Create user placeholder if needed (simplified since we don't have discord avatars in JSON)
-        await db.run(
-          "INSERT OR IGNORE INTO users (discord_id, username) VALUES (?, ?)",
-          res.discordId, res.username
-        );
-        const user = await db.get("SELECT id FROM users WHERE discord_id = ?", res.discordId);
-        
-        await db.run(
-          "INSERT INTO results (user_id, discord_id, username, entries_json, submitted_at) VALUES (?, ?, ?, ?, ?)",
-          user.id, res.discordId, res.username, JSON.stringify(res.entries), res.submittedAt
-        );
-      }
+      const insertUser = db.prepare("INSERT OR IGNORE INTO users (discord_id, username) VALUES (?, ?)");
+      const getUser = db.prepare("SELECT id FROM users WHERE discord_id = ?");
+      const insertResult = db.prepare(
+        "INSERT INTO results (user_id, discord_id, username, entries_json, submitted_at) VALUES (?, ?, ?, ?, ?)"
+      );
+
+      const insertMany = db.transaction((results: any[]) => {
+        for (const res of results) {
+          insertUser.run(res.discordId, res.username);
+          const user = getUser.get(res.discordId) as { id: number };
+          insertResult.run(user.id, res.discordId, res.username, JSON.stringify(res.entries), res.submittedAt);
+        }
+      });
+
+      insertMany(data.results || []);
       
       // Rename to avoid re-migration
       fs.renameSync(jsonPath, jsonPath + ".old");
@@ -122,65 +122,62 @@ export async function initDb() {
 
 // ─── DB Accessors ────────────────────────────────────────────────
 
-export async function getUserByDiscordId(discordId: string): Promise<User | undefined> {
-  const u = await db.get("SELECT * FROM users WHERE discord_id = ?", discordId);
+export function getUserByDiscordId(discordId: string): User | undefined {
+  const u = db.prepare("SELECT * FROM users WHERE discord_id = ?").get(discordId) as { id: number; discord_id: string; username: string; avatar: string | null } | undefined;
   if (!u) return undefined;
   return { id: u.id, discord_id: u.discord_id, username: u.username, avatar: u.avatar };
 }
 
-export async function createUser(discordId: string, username: string, avatar: string | null): Promise<User> {
-  const res = await db.run(
-    "INSERT INTO users (discord_id, username, avatar) VALUES (?, ?, ?)",
-    discordId, username, avatar
-  );
-  return { id: res.lastID!, discord_id: discordId, username, avatar };
+export function createUser(discordId: string, username: string, avatar: string | null): User {
+  const res = db.prepare(
+    "INSERT INTO users (discord_id, username, avatar) VALUES (?, ?, ?)"
+  ).run(discordId, username, avatar);
+  return { id: res.lastInsertRowid as number, discord_id: discordId, username, avatar };
 }
 
-export async function updateUser(id: number, username: string, avatar: string | null) {
-  await db.run("UPDATE users SET username = ?, avatar = ? WHERE id = ?", username, avatar, id);
+export function updateUser(id: number, username: string, avatar: string | null) {
+  db.prepare("UPDATE users SET username = ?, avatar = ? WHERE id = ?").run(username, avatar, id);
 }
 
-export async function saveSession(token: string, userId: number, expiresAt: Date) {
-  await db.run(
-    "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)",
-    token, userId, expiresAt.toISOString()
-  );
+export function saveSession(token: string, userId: number, expiresAt: Date) {
+  db.prepare(
+    "INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)"
+  ).run(token, userId, expiresAt.toISOString());
 }
 
-export async function deleteSession(token: string) {
-  await db.run("DELETE FROM sessions WHERE token = ?", token);
+export function deleteSession(token: string) {
+  db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
 }
 
-export async function getSession(token: string): Promise<Session | undefined> {
-  const s = await db.get("SELECT * FROM sessions WHERE token = ?", token);
+export function getSession(token: string): Session | undefined {
+  const s = db.prepare("SELECT * FROM sessions WHERE token = ?").get(token) as { user_id: number; token: string; expires_at: string } | undefined;
   if (!s) return undefined;
   // Check expiry
   const expiry = new Date(s.expires_at);
   if (expiry < new Date()) {
-    await deleteSession(token);
+    deleteSession(token);
     return undefined;
   }
   return { userId: s.user_id, token: s.token, expiresAt: expiry };
 }
 
-export async function getUserById(id: number): Promise<User | undefined> {
-  return db.get("SELECT * FROM users WHERE id = ?", id);
+export function getUserById(id: number): User | undefined {
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(id) as User | undefined;
 }
 
-export async function hasUserSubmitted(discordId: string): Promise<boolean> {
-  const res = await db.get("SELECT id FROM results WHERE discord_id = ?", discordId);
+export function hasUserSubmitted(discordId: string): boolean {
+  const res = db.prepare("SELECT id FROM results WHERE discord_id = ?").get(discordId);
   return !!res;
 }
 
-export async function saveResult(user: User, entries: ResultEntry[]) {
-  await db.run(
-    "INSERT INTO results (user_id, discord_id, username, entries_json) VALUES (?, ?, ?, ?)",
-    user.id, user.discord_id, user.username, JSON.stringify(entries)
-  );
+export function saveResult(user: User, entries: ResultEntry[]) {
+  db.prepare(
+    "INSERT INTO results (user_id, discord_id, username, entries_json) VALUES (?, ?, ?, ?)"
+  ).run(user.id, user.discord_id, user.username, JSON.stringify(entries));
 }
 
-export async function getAllResults() {
-  const rows = await db.all("SELECT * FROM results");
+export function getAllResults() {
+  const rows = db.prepare("SELECT * FROM results").all() as { user_id: number; discord_id: string; username: string; entries_json: string; submitted_at: string }[];
   return rows.map(r => ({
     userId: r.user_id,
     discordId: r.discord_id,

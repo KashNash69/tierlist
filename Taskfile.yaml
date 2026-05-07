@@ -1,0 +1,63 @@
+version: "3"
+
+dotenv: [".env"]
+
+tasks:
+  default:
+    desc: "List available tasks"
+    cmds:
+      - task --list
+
+  deploy:k8s:
+    desc: "Deploy to k3s with SOPS decryption"
+    cmds:
+      - kubectl apply -f k8s/namespace.yaml
+      - kubectl apply -f k8s/cluster-issuer.yaml
+      - kubectl apply -f k8s/configmap.yaml
+      - sops -d k8s/secret.yaml | kubectl apply -f -
+      - kubectl apply -f k8s/pvc.yaml
+      - kubectl apply -f k8s/service.yaml
+      - kubectl apply -f k8s/deployment.yaml
+      - kubectl apply -f k8s/ingress.yaml
+
+  deploy:k3s:
+    desc: "Build image, load into k3s containerd, then deploy"
+    cmds:
+      - task: image:k3s
+      - task: deploy:k8s
+
+  image:k3s:
+    desc: "Build image and load into k3s containerd"
+    cmds:
+      - docker build -t tierlist:latest .
+      - docker save tierlist:latest | k3s ctr images import -
+
+  delete:k8s:
+    desc: "Delete all resources from k3s"
+    cmds:
+      - kubectl delete -f k8s/
+
+  edit:secret:
+    desc: "Edit encrypted secret (opens in $EDITOR)"
+    cmds:
+      - sops k8s/secret.yaml
+
+  docker:build:
+    desc: "Build Docker image"
+    cmds:
+      - docker build -t tierlist:latest .
+
+  docker:up:
+    desc: "Start with docker compose"
+    cmds:
+      - docker compose up -d --build
+
+  docker:down:
+    desc: "Stop docker compose"
+    cmds:
+      - docker compose down
+
+  docker:logs:
+    desc: "View docker compose logs"
+    cmds:
+      - docker compose logs -f

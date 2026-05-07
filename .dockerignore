@@ -1,0 +1,15 @@
+node_modules
+.git
+.gitignore
+*.md
+.env
+.env.example
+k8s/
+api/node_modules
+api/dist
+frontend/node_modules
+frontend/.next
+frontend/out
+Dockerfile
+docker-compose.yml
+Taskfile.yaml

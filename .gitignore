@@ -6,3 +6,4 @@ dist/
 .next/
 out/
 build/
+age.key
